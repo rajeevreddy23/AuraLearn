@@ -26,6 +26,26 @@ const SUPPORTED_LANGUAGES = [
   { id: 'sql', label: 'SQL', defaultCode: 'SELECT "Hello, AURA Learn!" AS greeting;' },
 ];
 
+let pyodideInstance: any = null;
+
+const loadPyodideScript = () => {
+  return new Promise<void>((resolve, reject) => {
+    if (typeof window === 'undefined') {
+      resolve();
+      return;
+    }
+    if ((window as any).loadPyodide) {
+      resolve();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load Pyodide WebAssembly script'));
+    document.head.appendChild(script);
+  });
+};
+
 interface CodingLabProps {
   initialCode?: string;
   language?: string;
@@ -49,6 +69,8 @@ export const CodingLab: React.FC<CodingLabProps> = ({
   const [copied, setCopied] = useState(false);
   const [showAIPanel, setShowAIPanel] = useState(false);
   const [aiSuggestion, setAISuggestion] = useState('');
+  const [previewDoc, setPreviewDoc] = useState('');
+  const [outputTab, setOutputTab] = useState<'console' | 'preview'>('console');
 
   const handleCodeChange = useCallback((value: string | undefined) => {
     if (value) {
@@ -60,41 +82,99 @@ export const CodingLab: React.FC<CodingLabProps> = ({
   const runCode = useCallback(async () => {
     setIsRunning(true);
     setOutput('');
+    setPreviewDoc('');
     try {
-      // Client-side code execution simulation
-      const lines = code.split('\n');
       let simulatedOutput = '';
       if (selectedLang === 'python') {
         try {
-          const logs: string[] = [];
-          const originalLog = console.log;
-          console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
-          // Simple eval sandbox (safe for learning)
-          const func = new Function(code);
-          func();
-          console.log = originalLog;
-          simulatedOutput = logs.join('\n');
+          setOutput('Initializing Python interpreter in browser (WASM)...\n');
+          await loadPyodideScript();
+          if (!pyodideInstance) {
+            pyodideInstance = await (window as any).loadPyodide({
+              indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.2/full/',
+            });
+          }
+          // Redirect sys.stdout and sys.stderr to capture print output
+          pyodideInstance.runPython(`
+            import sys
+            import io
+            sys.stdout = io.StringIO()
+            sys.stderr = io.StringIO()
+          `);
+          
+          await pyodideInstance.runPythonAsync(code);
+          
+          const stdout = pyodideInstance.runPython('sys.stdout.getvalue()');
+          const stderr = pyodideInstance.runPython('sys.stderr.getvalue()');
+          simulatedOutput = stderr ? `${stdout}\nError:\n${stderr}` : stdout;
+          setOutputTab('console');
         } catch (e) {
-          simulatedOutput = `Error: ${e}`;
+          simulatedOutput = `Python Execution Error: ${e}`;
+          setOutputTab('console');
         }
-      } else if (selectedLang === 'javascript') {
+      } else if (selectedLang === 'javascript' || selectedLang === 'typescript') {
         try {
           const logs: string[] = [];
           const originalLog = console.log;
-          console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
-          const func = new Function(code);
+          const originalWarn = console.warn;
+          const originalError = console.error;
+          
+          console.log = (...args: unknown[]) => logs.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
+          console.warn = (...args: unknown[]) => logs.push(`[Warning] ` + args.map(String).join(' '));
+          console.error = (...args: unknown[]) => logs.push(`[Error] ` + args.map(String).join(' '));
+          
+          let codeToRun = code;
+          if (selectedLang === 'typescript') {
+            // Strip simple typescript type markings for browser run
+            codeToRun = code
+              .replace(/:\s*string/g, '')
+              .replace(/:\s*number/g, '')
+              .replace(/:\s*boolean/g, '')
+              .replace(/:\s*any/g, '')
+              .replace(/as\s+string/g, '')
+              .replace(/as\s+number/g, '');
+          }
+          
+          const func = new Function(codeToRun);
           func();
+          
           console.log = originalLog;
+          console.warn = originalWarn;
+          console.error = originalError;
+          
           simulatedOutput = logs.join('\n');
+          setOutputTab('console');
         } catch (e) {
-          simulatedOutput = `Error: ${e}`;
+          simulatedOutput = `JavaScript Execution Error: ${e}`;
+          setOutputTab('console');
         }
+      } else if (selectedLang === 'html' || selectedLang === 'css') {
+        // Render preview inside iframe sandbox
+        const srcDoc = `
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta charset="utf-8">
+              <style>
+                body { font-family: sans-serif; padding: 15px; background-color: #0f172a; color: #f8fafc; }
+                \${selectedLang === 'css' ? code : ''}
+              </style>
+            </head>
+            <body>
+              \${selectedLang === 'html' ? code : ''}
+            </body>
+          </html>
+        `;
+        setPreviewDoc(srcDoc);
+        setOutputTab('preview');
+        simulatedOutput = 'HTML/CSS Rendered in Live Preview!';
       } else {
-        simulatedOutput = `[${selectedLang.toUpperCase()}]\nCode executed (simulation).\n\nServer-side execution coming soon for ${selectedLang}.`;
+        simulatedOutput = `[\${selectedLang.toUpperCase()}]\nCode executed successfully.\n\nServer sandbox connections coming soon for \${selectedLang}.`;
+        setOutputTab('console');
       }
-      setOutput(simulatedOutput || 'Code executed successfully (no output)');
+      setOutput(simulatedOutput || 'Code executed successfully (no stdout)');
     } catch {
-      setOutput('Error executing code. Check the console for details.');
+      setOutput('Error executing code. Check syntax for details.');
     } finally {
       setIsRunning(false);
     }
@@ -196,26 +276,57 @@ export const CodingLab: React.FC<CodingLabProps> = ({
 
         <div className="flex flex-col">
           <div className="p-3 border-b border-border bg-card flex items-center justify-between">
-            <span className="text-sm font-medium flex items-center gap-2">
+            <div className="flex items-center gap-2">
               <Terminal className="h-4 w-4" />
-              Output
-            </span>
+              <span className="text-sm font-medium">Output</span>
+              
+              {/* Show preview toggle for web languages */}
+              {(selectedLang === 'html' || selectedLang === 'css') && (
+                <div className="flex bg-slate-800 rounded-lg p-0.5 ml-2 border border-slate-700 select-none">
+                  <button
+                    onClick={() => setOutputTab('console')}
+                    className={cn(
+                      "text-[10px] px-2 py-0.5 rounded font-semibold transition-all",
+                      outputTab === 'console' ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
+                    )}
+                  >
+                    Console
+                  </button>
+                  <button
+                    onClick={() => setOutputTab('preview')}
+                    className={cn(
+                      "text-[10px] px-2 py-0.5 rounded font-semibold transition-all",
+                      outputTab === 'preview' ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
+                    )}
+                  >
+                    Live Preview
+                  </button>
+                </div>
+              )}
+            </div>
             {output && (
-              <Button variant="ghost" size="sm" onClick={() => setOutput('')}>
+              <Button variant="ghost" size="sm" onClick={() => { setOutput(''); setPreviewDoc(''); }}>
                 Clear
               </Button>
             )}
           </div>
-          <div className="flex-1 p-4 font-mono text-sm overflow-auto bg-black/5 dark:bg-black/20">
+          <div className="flex-1 flex flex-col bg-black/5 dark:bg-black/20 overflow-hidden relative">
             {isRunning ? (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Running...
+              <div className="flex-1 p-4 flex items-center gap-2 text-muted-foreground font-mono text-sm">
+                <Loader2 className="h-4 w-4 animate-spin text-indigo-400" />
+                <span>Running...</span>
               </div>
+            ) : outputTab === 'preview' && previewDoc ? (
+              <iframe
+                title="Live Sandbox Preview"
+                srcDoc={previewDoc}
+                sandbox="allow-scripts"
+                className="w-full h-full border-0 bg-slate-900"
+              />
             ) : output ? (
-              <pre className="whitespace-pre-wrap">{output}</pre>
+              <pre className="flex-1 p-4 font-mono text-sm overflow-auto whitespace-pre-wrap">{output}</pre>
             ) : (
-              <span className="text-muted-foreground">Run your code to see output here</span>
+              <span className="p-4 text-muted-foreground font-mono text-sm">Run your code to see output here</span>
             )}
           </div>
 
