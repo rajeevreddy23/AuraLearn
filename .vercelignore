@@ -1,0 +1,11 @@
+# Ignore backend and local docker setups for Vercel
+backend/
+docker/
+docs/
+scripts/
+Dockerfile
+docker-compose.yml
+firestore.rules
+firestore.indexes.json
+README.md
+system_design.md
