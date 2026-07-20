@@ -1,0 +1,85 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper: check user role
+    function hasRole(role) {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || hasRole('admin'));
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && request.auth.uid == userId &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'subscription']);
+      allow delete: if hasRole('admin');
+    }
+
+    // Courses collection
+    match /courses/{courseId} {
+      allow read: if true;
+      allow create: if hasRole('teacher') || hasRole('admin');
+      allow update: if hasRole('teacher') || hasRole('admin');
+      allow delete: if hasRole('admin');
+    }
+
+    // Enrollments
+    match /enrollments/{enrollmentId} {
+      allow read: if isAuthenticated() && 
+        (request.auth.uid == resource.data.user_id || hasRole('admin'));
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.user_id;
+      allow update: if isAuthenticated() && request.auth.uid == resource.data.user_id &&
+        request.resource.data.user_id == resource.data.user_id;
+      allow delete: if hasRole('admin');
+    }
+
+    // Quiz Results
+    match /quiz_results/{resultId} {
+      allow read: if isAuthenticated() && 
+        (request.auth.uid == resource.data.user_id || hasRole('admin'));
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.user_id;
+      allow update: if isAuthenticated() && request.auth.uid == resource.data.user_id &&
+        request.resource.data.user_id == resource.data.user_id;
+    }
+
+    // Certificates
+    match /certificates/{certId} {
+      allow read: if true;
+      allow create: if hasRole('admin');
+      allow update: if hasRole('admin');
+      allow delete: if hasRole('admin');
+    }
+
+    // Notifications
+    match /notifications/{notifId} {
+      allow read: if isAuthenticated() && 
+        (request.auth.uid == resource.data.user_id || hasRole('admin'));
+      allow create: if hasRole('admin') || hasRole('teacher');
+      allow update: if isAuthenticated() && request.auth.uid == resource.data.user_id &&
+        request.resource.data.user_id == resource.data.user_id;
+      allow delete: if hasRole('admin');
+    }
+
+    // Study Sessions
+    match /study_sessions/{sessionId} {
+      allow read: if isAuthenticated() && 
+        (request.auth.uid == resource.data.user_id || hasRole('admin'));
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.user_id;
+      allow update: if isAuthenticated() && request.auth.uid == resource.data.user_id &&
+        request.resource.data.user_id == resource.data.user_id;
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
