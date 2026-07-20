@@ -737,7 +737,6 @@ Keep the explanation focused and helpful. After answering, say "Ready to continu
 
   const resumeLesson = useCallback(() => {
     setIsPaused(false);
-    setShowDoubtPanel(false);
     setDoubtAnswer('');
     setAssistantEmotion('happy');
     setAssistantAnimation('idle');
